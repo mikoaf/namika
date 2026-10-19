@@ -28,9 +28,9 @@ Ambang sensor merupakan nilai awal untuk eksperimen pada kaktus gurun. Sesuaikan
 
 OLED, BME280, dan BH1750 berbagi bus I2C. Gunakan modul yang kompatibel dengan logika 3,3 V dan sesuaikan catu dayanya dengan spesifikasi modul. Tegangan sinyal yang masuk ke GPIO ESP32 harus sesuai batas 3,3 V.
 
-Input touch menggunakan **output digital modul touch**, bukan pembacaan sentuhan kapasitif langsung pada pin ESP32. Untuk modul aktif `LOW`, ubah `TOUCH_ACTIVE_LEVEL` menjadi `LOW`; program menyesuaikan pull-up/pull-down input.
+Input touch menggunakan **output digital modul touch**, bukan pembacaan sentuhan kapasitif langsung pada pin ESP32. Untuk modul aktif `LOW`, ubah `TOUCH_ACTIVE_LEVEL` menjadi `0` (`LOW`) di `include/AppConfig.h`; program menyesuaikan pull-up/pull-down input.
 
-Program mendukung penyiraman otomatis setelah kalibrasi tanah. Hubungkan pompa melalui driver MOSFET dengan proteksi beban induktif atau modul relay yang sesuai, bukan langsung ke GPIO. Gunakan catu daya sesuai pompa. Sesuaikan `PUMP_ACTIVE_LEVEL` (`HIGH` atau `LOW`) dengan driver. Pastikan driver tetap dalam kondisi mati saat ESP32 boot/reset menggunakan bias input yang sesuai pada rangkaian.
+Program mendukung penyiraman otomatis setelah kalibrasi tanah. Hubungkan pompa melalui driver MOSFET dengan proteksi beban induktif atau modul relay yang sesuai, bukan langsung ke GPIO. Gunakan catu daya sesuai pompa. Sesuaikan `PUMP_ACTIVE_LEVEL` (`1` untuk `HIGH`, `0` untuk `LOW`) dengan driver. Pastikan driver tetap dalam kondisi mati saat ESP32 boot/reset menggunakan bias input yang sesuai pada rangkaian.
 
 ## Penyiraman otomatis
 
@@ -65,17 +65,17 @@ Aplikasi/backend <-- MQTT --> Broker cloud <-- MQTT/TLS --> ESP32
 
 Perintah diterima melalui subscription saat perangkat tersambung, tanpa polling HTTP. Kredensial broker belum diisi sehingga MQTT nonaktif pada konfigurasi awal. OLED, pembacaan sensor, dan penyiraman otomatis lokal tetap berjalan. Implementasi memakai [ESP-MQTT bawaan ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/protocols/mqtt.html), tanpa dependency library MQTT tambahan.
 
-Isi konfigurasi di `src/main.cpp` setelah memilih MQTT cloud:
+Isi konfigurasi di `include/AppConfig.h` setelah memilih MQTT cloud:
 
 ```cpp
-const char *ssid = "NamaWiFi";
-const char *password = "PasswordWiFi";
-const char *MQTT_HOST = "hostname-broker-cloud-anda";
+constexpr const char *WIFI_SSID = "NamaWiFi";
+constexpr const char *WIFI_PASSWORD = "PasswordWiFi";
+constexpr const char *MQTT_HOST = "hostname-broker-cloud-anda";
 constexpr uint16_t MQTT_PORT = 8883;
-const char *MQTT_USERNAME = "username-perangkat";
-const char *MQTT_PASSWORD = "password-perangkat";
-const char *MQTT_DEVICE_ID = "namika-01";
-const char *MQTT_ROOT_CA = R"PEM(-----BEGIN CERTIFICATE-----
+constexpr const char *MQTT_USERNAME = "username-perangkat";
+constexpr const char *MQTT_PASSWORD = "password-perangkat";
+constexpr const char *MQTT_DEVICE_ID = "namika-01";
+constexpr const char *MQTT_ROOT_CA = R"PEM(-----BEGIN CERTIFICATE-----
 ...isi sertifikat root CA yang memverifikasi broker...
 -----END CERTIFICATE-----
 )PEM";
@@ -153,7 +153,7 @@ Jaringan berjalan pada task terpisah dan tidak menulis GPIO pompa. Antrean masuk
 1. Pasang VS Code dengan ekstensi PlatformIO IDE, atau gunakan PlatformIO Core.
 2. Buka folder proyek yang berisi `platformio.ini`.
 3. Hubungkan modul sesuai tabel wiring dan sambungkan ESP32 melalui USB.
-4. Atur konfigurasi di [src/main.cpp](src/main.cpp), terutama kalibrasi tanah dan Wi-Fi jika digunakan.
+4. Atur konfigurasi di [include/AppConfig.h](include/AppConfig.h), terutama kalibrasi tanah dan Wi-Fi jika digunakan.
 5. Jalankan **Build**, kemudian **Upload**, dan buka **Serial Monitor** pada 115200 baud.
 
 Perintah berikut dijalankan dari folder proyek jika `pio` tersedia di PATH:
@@ -185,11 +185,11 @@ Pertahankan folder library lokal ketika menyalin proyek. Library **SSD1306 OLED 
 
 ## Konfigurasi Wi-Fi dan waktu
 
-Isi kredensial di [src/main.cpp](src/main.cpp):
+Isi kredensial di [include/AppConfig.h](include/AppConfig.h):
 
 ```cpp
-const char *ssid = "NamaWiFi";
-const char *password = "PasswordWiFi";
+constexpr const char *WIFI_SSID = "NamaWiFi";
+constexpr const char *WIFI_PASSWORD = "PasswordWiFi";
 ```
 
 SSID kosong atau nilai bawaan `YourWiFiSSID` membuat koneksi Wi-Fi tidak dijalankan. Monitoring tetap bekerja secara offline. Jika koneksi terputus, program mencoba tersambung kembali setiap 30 detik.
@@ -209,7 +209,7 @@ Nilai awal `3000` dan `1300` hanya contoh. Sebelum dikalibrasi, nilai persentase
 1. Buka Serial Monitor pada 115200 baud dan amati nilai `raw` yang dicetak setiap 5 detik.
 2. Ukur nilai yang stabil saat sensor berada dalam media tanam kering. Gunakan sebagai `SOIL_RAW_DRY`.
 3. Siram media yang sama, biarkan air berlebih selesai mengalir, lalu ukur nilai yang stabil. Gunakan sebagai `SOIL_RAW_WET`.
-4. Isi kedua nilai di `src/main.cpp`, kemudian ubah `SOIL_CALIBRATED` menjadi `true`.
+4. Isi kedua nilai di `include/AppConfig.h`, kemudian ubah `SOIL_CALIBRATED` menjadi `true`.
 5. Build dan upload ulang.
 
 ```cpp
@@ -288,19 +288,41 @@ Animation: Happy
 
 ```text
 namika/
-├── platformio.ini                Konfigurasi board, dependency, dan baud monitor
-├── src/main.cpp                  Sensor, pompa, Wi-Fi, waktu, dan OLED
-├── src/MqttMonitoring.cpp        MQTT TLS, subscription perintah, dan ACK
-├── include/MqttMonitoring.h      Antrean perintah dan snapshot antar-task
-├── include/MqttPacket.h          Perakitan payload MQTT terfragmentasi
-├── include/CloudCommand.h        Validasi ID, aksi, dan kedaluwarsa perintah
-├── include/WateringController.h  Timer dan batas penyiraman otomatis
-├── include/CactusMood.h          Kalibrasi, rata-rata, timer, dan penilaian mood
-├── include/EyeAnimation.h        Debounce touch, deteksi tidur, dan kontrol animasi
-├── include/EyeRenderer.h         Penggambaran mata pada Adafruit SSD1306
-├── lib/                         Library lokal
-└── test/host/                   Pengujian logika tanpa ESP32
+├── platformio.ini
+├── include/
+│   ├── AppConfig.h              Pin, kalibrasi, Wi-Fi, MQTT, dan interval aplikasi
+│   ├── NamikaApp.h              Komposisi modul dan penjadwalan
+│   ├── SensorSample.h           Data hasil baca sensor tanpa dependency hardware
+│   ├── SensorService.h          Driver BME280, BH1750, dan ADC tanah
+│   ├── PlantMonitor.h           Status monitoring, rata-rata, mood, dan deteksi tidur
+│   ├── IrrigationService.h      Akses GPIO pompa dan pelaksanaan perintah
+│   ├── Connectivity.h           Wi-Fi, reconnect, serta waktu NTP/WIB
+│   ├── FaceDisplay.h            OLED, touch, dan pemilihan animasi
+│   ├── MqttMonitoring.h         Antrean snapshot/perintah MQTT
+│   ├── MqttPacket.h             Perakitan payload MQTT terfragmentasi
+│   ├── CloudCommand.h           Validasi ID, aksi, dan kedaluwarsa perintah
+│   ├── WateringController.h     Logika pulsa, peresapan, cooldown, dan kunci
+│   ├── CactusMood.h             Kalibrasi dan aturan penilaian mood
+│   ├── EyeAnimation.h           Logika animasi, debounce, dan deteksi gelap
+│   └── EyeRenderer.h            Penggambaran mata
+├── src/
+│   ├── main.cpp                Entry point setup()/loop()
+│   ├── NamikaApp.cpp           Menghubungkan modul dan mengatur urutan eksekusi
+│   ├── SensorService.cpp
+│   ├── PlantMonitor.cpp
+│   ├── IrrigationService.cpp
+│   ├── Connectivity.cpp
+│   ├── FaceDisplay.cpp
+│   └── MqttMonitoring.cpp
+├── lib/
+└── test/host/
 ```
+
+`main.cpp` hanya membuat `NamikaApp` dan memanggil `begin()`/`update()`. Ubah konfigurasi perangkat di `include/AppConfig.h` dalam namespace `config`. `NamikaApp` menghubungkan hasil sensor ke monitor dan pompa, meneruskan perintah MQTT, serta membentuk snapshot jaringan. Modul MQTT menerima konfigurasi lewat parameter dan tidak mengakses objek pompa.
+
+`SensorService` memiliki seluruh driver sensor; `PlantMonitor` hanya mengolah `SensorSample` sehingga dapat diuji tanpa ESP32. `IrrigationService` menjadi pemilik GPIO pompa dan menggunakan `WateringController` yang tetap bisa diuji terpisah. `FaceDisplay` membaca status monitor dan controller untuk menggambar, tanpa mengubah kondisi tanaman atau mengendalikan pompa. `Connectivity` menangani Wi-Fi dan jam. Bus `Wire` diinisialisasi sekali oleh `NamikaApp` sebelum modul sensor dan OLED dimulai.
+
+Alur setiap iterasi: periksa deadline pompa dan perintah → rawat Wi-Fi/sensor → baca sensor jika waktunya → perbarui monitoring dan keputusan penyiraman → periksa pompa lagi → perbarui animasi/OLED → terbitkan snapshot internal jika waktunya. Task MQTT tetap terpisah dari loop ini. Interval dan aturan penyiraman mengikuti konfigurasi sebelumnya.
 
 ## Pengujian logika
 
@@ -332,6 +354,13 @@ Pengujian payload MQTT:
 ```bash
 g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_mqtt_packet.cpp -o /tmp/namika-test-mqtt
 /tmp/namika-test-mqtt
+```
+
+Pengujian integrasi monitoring setelah pemisahan modul:
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_monitor.cpp src/PlantMonitor.cpp -o /tmp/namika-test-monitor
+/tmp/namika-test-monitor
 ```
 
 Pengujian mencakup ambang mood, kalibrasi dua arah, rata-rata bergerak, timer tanah basah, wakeup, sleep, prioritas touch, debounce, dan rollover timer. Build ESP32 dilakukan melalui `pio run -e esp32dev`. Pembacaan sensor, polaritas touch, dan tampilan OLED perlu diperiksa pada perangkat fisik.
