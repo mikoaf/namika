@@ -6,15 +6,29 @@
 #include <WiFi.h>
 #include <time.h>
 #include "CactusMood.h"
+#include "WateringController.h"
+#include "MqttMonitoring.h"
 #include "EyeRenderer.h"
 
 // Replace credentials to enable network time; monitoring also works offline.
 const char *ssid = "YourWiFiSSID";
 const char *password = "YourWiFiPassword";
+// MQTT cloud is optional until a broker is configured. Host has no URL scheme.
+const char *MQTT_HOST = "";  // e.g. your-cluster.example.com
+constexpr uint16_t MQTT_PORT = 8883;
+const char *MQTT_USERNAME = "";
+const char *MQTT_PASSWORD = "";
+const char *MQTT_ROOT_CA = "";  // PEM root CA matching the broker certificate.
+const char *MQTT_DEVICE_ID = "namika-01";  // Unique per device; letters/digits/-/_.
 constexpr int SOIL_SENSOR_PIN = 34;  // ADC1; move sensor output from GPIO5.
 constexpr int TOUCH_SENSOR_PIN = 27;  // Digital touch-module OUT; avoid UART RX.
 constexpr int TOUCH_ACTIVE_LEVEL = HIGH;  // Change to LOW for active-low modules.
 constexpr int PUMP_PIN = 4;
+constexpr int PUMP_ACTIVE_LEVEL = HIGH;  // LOW for active-low relay modules.
+constexpr bool AUTO_WATERING_ENABLED = true;  // Also requires soil calibration.
+// Experimental settings; adjust pulse duration to measured pump flow/pot size.
+const watering::Config WATERING_CONFIG{};  // 15/25%, 1s pulse, 5min soak, max 3.
+watering::Controller irrigation(WATERING_CONFIG);
 constexpr int I2C_SDA = 21, I2C_SCL = 22;
 constexpr int SOIL_RAW_DRY = 3000;  // EXAMPLE: measure in your dry medium.
 constexpr int SOIL_RAW_WET = 1300;  // EXAMPLE: after watering and draining.
@@ -40,7 +54,56 @@ bool sensorsValid = false, sleeping = false, wetTooLong = false;
 bool clockReady = false, wifiConfigured = false;
 int soilRaw = 0;
 uint32_t lastSample = 0, lastDisplay = 0;
-uint32_t lastWiFiAttempt = 0, lastSensorRetry = 0;
+uint32_t lastWiFiAttempt = 0, lastSensorRetry = 0, lastPublish = 0;
+uint32_t lastCommandId = 0;
+const char *lastCommandResult = "none";
+
+bool wateringInputUsable(uint32_t now) {
+  return SOIL_CALIBRATED && sensorsValid &&
+         soilRaw > 0 && soilRaw < 4095 && uint32_t(now - lastSample) < 2 * SAMPLE_MS;
+}
+
+void writePump() {
+  digitalWrite(PUMP_PIN, irrigation.pumping() ? PUMP_ACTIVE_LEVEL :
+               (PUMP_ACTIVE_LEVEL == HIGH ? LOW : HIGH));
+}
+
+const char *wateringStateName() {
+  switch (irrigation.state()) {
+    case watering::State::Watering: return "watering";
+    case watering::State::Soaking: return "soaking";
+    case watering::State::Cooldown: return "cooldown";
+    case watering::State::Locked: return "locked";
+    default: return "monitoring";
+  }
+}
+
+void handleRemoteCommands(uint32_t now) {
+  remote::Command command;
+  if (!remote::takeCommand(command)) return;
+  lastCommandId = command.id;
+  if (time(nullptr) < 1704067200 || uint32_t(time(nullptr)) >= command.expiresAt) {
+    lastCommandResult = "expired";
+  } else if (command.action == remote::Action::Stop) {
+    irrigation.stop(now);
+    lastCommandResult = "stopped";
+  } else {
+    lastCommandResult = irrigation.requestManual(now, latest.soil, wateringInputUsable(now));
+  }
+  writePump();
+  Serial.printf("Cloud command %lu: %s\n", (unsigned long)lastCommandId, lastCommandResult);
+}
+
+void publishMonitoring(uint32_t now) {
+  const remote::Snapshot snapshot{
+      now, uint32_t(now - lastSample), lastCommandId,
+      latest.temperature, latest.humidity, latest.lux, latest.soil, soilRaw,
+      unsigned(samples.count()), unsigned(mood.overall), unsigned(irrigation.pulses()),
+      sensorsValid && uint32_t(now - lastSample) < 2 * SAMPLE_MS,
+      SOIL_CALIBRATED, AUTO_WATERING_ENABLED, irrigation.pumping(),
+      wateringStateName(), lastCommandResult};
+  remote::publish(snapshot);
+}
 
 void maintainWiFi(uint32_t now) {
   if (!wifiConfigured || WiFi.status() == WL_CONNECTED) return;
@@ -77,11 +140,15 @@ void sampleSensors(uint32_t now) {
     wetTooLong = wetCondition.update(SOIL_CALIBRATED && latest.soil > 60,
                                      now, WET_WARNING_MS);
   }
+  irrigation.sample(now, latest.soil, wateringInputUsable(now), AUTO_WATERING_ENABLED);
+  writePump();
   updateSleep(now);
   if (sensorsValid && samples.count() == WINDOW_SAMPLES)
     mood = cactus::evaluate(samples.mean(), sleeping, wetTooLong, SOIL_CALIBRATED);
   else
     mood = {2, 2, 2, 2, 2, sensorsValid ? "Mengumpulkan data" : "Cek sensor"};
+  Serial.printf("Watering: %s pulses=%u enabled=%d\n", irrigation.status(),
+                unsigned(irrigation.pulses()), AUTO_WATERING_ENABLED && SOIL_CALIBRATED);
   Serial.printf("raw=%d soil=%.1f%% T=%.1fC RH=%.1f%% lux=%.0f "
                 "levels[T,H,L,S]=%u,%u,%u,%u mood=%u sleep=%d "
                 "valid=%d samples=%u/%u calibrated=%d reason=%s\n",
@@ -105,7 +172,9 @@ void updateDisplay(uint32_t now) {
   display.setCursor(0, 56);
   const cactus::Reading values = samples.count() ? samples.mean() : latest;
   // Keep diagnostics visible even while touch or sleep overrides the face.
-  if (!sensorsValid) display.print("Cek sensor");
+  if (irrigation.state() == watering::State::Locked || irrigation.pumping() ||
+      irrigation.state() == watering::State::Soaking) display.print(irrigation.status());
+  else if (!sensorsValid) display.print("Cek sensor");
   else if (!SOIL_CALIBRATED && mood.overall != 1) display.print("Kalibrasi tanah");
   else if (samples.count() < WINDOW_SAMPLES)
     display.printf("Data %u/%u", unsigned(samples.count()), unsigned(WINDOW_SAMPLES));
@@ -117,8 +186,8 @@ void updateDisplay(uint32_t now) {
 
 void setup() {
   Serial.begin(115200);
+  digitalWrite(PUMP_PIN, PUMP_ACTIVE_LEVEL == HIGH ? LOW : HIGH);
   pinMode(PUMP_PIN, OUTPUT);
-  digitalWrite(PUMP_PIN, LOW);  // Monitoring only; no automatic watering.
   pinMode(TOUCH_SENSOR_PIN, TOUCH_ACTIVE_LEVEL == HIGH ? INPUT_PULLDOWN : INPUT_PULLUP);
   pinMode(SOIL_SENSOR_PIN, INPUT);
   analogReadResolution(12);
@@ -140,10 +209,19 @@ void setup() {
   lastSample = millis();
   animation.begin(lastSample);
   updateDisplay(lastSample);
+  const remote::Config mqttConfig{MQTT_HOST, MQTT_PORT, MQTT_USERNAME,
+                                  MQTT_PASSWORD, MQTT_ROOT_CA, MQTT_DEVICE_ID};
+  if (!remote::begin(mqttConfig))
+    Serial.println("Cloud initialization failed; offline monitoring continues");
+  publishMonitoring(millis());
 }
 
 void loop() {
   const uint32_t now = millis();
+  // Service pump deadlines and commands before slower sensor/network maintenance.
+  irrigation.tick(now, wateringInputUsable(now));
+  writePump();
+  handleRemoteCommands(now);
   maintainWiFi(now);
   if (uint32_t(now - lastSensorRetry) >= 30000) {
     lastSensorRetry = now;
@@ -157,6 +235,11 @@ void loop() {
     lastSample = now;
     sampleSensors(now);
   }
+  const bool wasPumping = irrigation.pumping();
+  irrigation.tick(now, wateringInputUsable(now));
+  writePump();
+  if (wasPumping != irrigation.pumping())
+    Serial.printf("Watering: %s\n", irrigation.status());
   const bool touched = touchDebouncer.update(
       digitalRead(TOUCH_SENSOR_PIN) == TOUCH_ACTIVE_LEVEL, now);
   const bool environmentKnown = sensorsValid && samples.count() == WINDOW_SAMPLES &&
@@ -168,6 +251,10 @@ void loop() {
   if (uint32_t(now - lastDisplay) >= 40) {
     lastDisplay = now;
     updateDisplay(now);
+  }
+  if (uint32_t(millis() - lastPublish) >= 250) {
+    lastPublish = millis();
+    publishMonitoring(lastPublish);
   }
   delay(5);
 }
