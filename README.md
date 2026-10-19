@@ -24,13 +24,129 @@ Ambang sensor merupakan nilai awal untuk eksperimen pada kaktus gurun. Sesuaikan
 | Output analog sensor tanah | GPIO34 | ADC1, menggantikan GPIO5 |
 | Output digital modul touch | GPIO27 | Menggantikan GPIO3; default aktif `HIGH` |
 | GND seluruh modul | GND | Ground bersama |
-| Kontrol pompa, jika dipasang | GPIO4 | Dicadangkan; program hanya menulis `LOW` |
+| Kontrol pompa, jika dipasang | GPIO4 | Sinyal kontrol driver pompa; polaritas melalui `PUMP_ACTIVE_LEVEL` |
 
 OLED, BME280, dan BH1750 berbagi bus I2C. Gunakan modul yang kompatibel dengan logika 3,3 V dan sesuaikan catu dayanya dengan spesifikasi modul. Tegangan sinyal yang masuk ke GPIO ESP32 harus sesuai batas 3,3 V.
 
 Input touch menggunakan **output digital modul touch**, bukan pembacaan sentuhan kapasitif langsung pada pin ESP32. Untuk modul aktif `LOW`, ubah `TOUCH_ACTIVE_LEVEL` menjadi `LOW`; program menyesuaikan pull-up/pull-down input.
 
-Program belum mengendalikan penyiraman otomatis. Jika memakai driver pompa, sesuaikan polaritas aktif driver dengan keadaan GPIO4 sebelum menghubungkan pompa.
+Program mendukung penyiraman otomatis setelah kalibrasi tanah. Hubungkan pompa melalui driver MOSFET dengan proteksi beban induktif atau modul relay yang sesuai, bukan langsung ke GPIO. Gunakan catu daya sesuai pompa. Sesuaikan `PUMP_ACTIVE_LEVEL` (`HIGH` atau `LOW`) dengan driver. Pastikan driver tetap dalam kondisi mati saat ESP32 boot/reset menggunakan bias input yang sesuai pada rangkaian.
+
+## Penyiraman otomatis
+
+`AUTO_WATERING_ENABLED = true` dan `SOIL_CALIBRATED = true` diperlukan untuk mengaktifkan penyiraman. Nilai bawaan kalibrasi masih `false`, sehingga pompa tetap mati sampai endpoint ADC diukur dan konfigurasi diubah.
+
+Pengaturan awal `WATERING_CONFIG` menggunakan nilai bawaan pada `include/WateringController.h`:
+
+| Pengaturan | Nilai awal | Perilaku |
+|---|---|---|
+| `dry` / `dryMs` | 15% / 5 menit | Seluruh pembacaan harus di bawah 15% selama 5 menit |
+| `wet` | 25% | Target untuk menyelesaikan satu siklus |
+| `pulseMs` | 1 detik | Durasi maksimum setiap pulsa pompa |
+| `soakMs` | 5 menit | Jeda pompa mati sebelum mengevaluasi pembacaan baru |
+| `maxPulses` | 3 | Maksimum pulsa per siklus |
+| `cooldownMs` | 24 jam | Jeda setelah siklus berhasil, lalu konfirmasi kering dimulai lagi |
+
+Ini adalah parameter eksperimen, bukan dosis penyiraman universal untuk kaktus. Ukur debit pompa dan sesuaikan durasi dengan pot, media, dan tanaman. Keputusan memakai pembacaan individual tanah, terpisah dari rata-rata mood. Pada pulsa berikutnya dalam siklus, pompa dapat menyala jika indeks masih di bawah target 25%, meskipun sudah melewati ambang awal 15%.
+
+Setelah pulsa terakhir, program tetap menunggu peresapan. Jika target belum tercapai, status menjadi `Cek air / sensor` dan pompa terkunci. Gangguan sensor saat memompa/menunggu peresapan juga mengunci pompa. Periksa air, selang, sensor, dan konfigurasi sebelum restart untuk membuka kunci. Tidak ada pengulangan otomatis dari kondisi terkunci.
+
+Pembacaan sensor tidak valid, ADC tepat 0 atau 4095, atau data berumur 10 detik menghentikan/mencegah pompa. Gangguan BME280/BH1750 juga menghambat penyiraman karena validasi memakai seluruh sensor. Sensor tanah yang terputus tetapi menghasilkan nilai ADC masuk akal masih dapat lolos pemeriksaan ini; batas pulsa membatasi satu siklus, bukan mendeteksi seluruh kerusakan sensor.
+
+Timer berjalan menggunakan `millis()` tanpa `delay()` penyiraman, sehingga animasi tetap berjalan. Timer dan kunci hanya tersimpan di RAM: restart menghapus jeda 24 jam serta riwayat pulsa, dan konfirmasi kering dimulai dari awal. Jangan gunakan restart berulang sebagai cara mengulang penyiraman.
+
+## Integrasi MQTT cloud
+
+ESP32 memakai MQTT 3.1.1 melalui TLS untuk publish monitoring dan subscribe perintah. Aplikasi dapat memakai broker cloud yang sama; backend aplikasi dapat ditambahkan untuk login pengguna dan menyimpan riwayat.
+
+```text
+Aplikasi/backend <-- MQTT --> Broker cloud <-- MQTT/TLS --> ESP32
+```
+
+Perintah diterima melalui subscription saat perangkat tersambung, tanpa polling HTTP. Kredensial broker belum diisi sehingga MQTT nonaktif pada konfigurasi awal. OLED, pembacaan sensor, dan penyiraman otomatis lokal tetap berjalan. Implementasi memakai [ESP-MQTT bawaan ESP-IDF](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/protocols/mqtt.html), tanpa dependency library MQTT tambahan.
+
+Isi konfigurasi di `src/main.cpp` setelah memilih MQTT cloud:
+
+```cpp
+const char *ssid = "NamaWiFi";
+const char *password = "PasswordWiFi";
+const char *MQTT_HOST = "hostname-broker-cloud-anda";
+constexpr uint16_t MQTT_PORT = 8883;
+const char *MQTT_USERNAME = "username-perangkat";
+const char *MQTT_PASSWORD = "password-perangkat";
+const char *MQTT_DEVICE_ID = "namika-01";
+const char *MQTT_ROOT_CA = R"PEM(-----BEGIN CERTIFICATE-----
+...isi sertifikat root CA yang memverifikasi broker...
+-----END CERTIFICATE-----
+)PEM";
+```
+
+`MQTT_HOST` hanya hostname, tanpa `mqtts://`, path, atau nomor port. Gunakan endpoint MQTT TCP/TLS broker, bukan alamat dashboard atau WebSocket. Firmware saat ini memakai autentikasi username/password dan verifikasi sertifikat server; broker yang mewajibkan sertifikat klien/mTLS membutuhkan penyesuaian. Root CA harus sesuai broker dan waktu NTP harus tersinkron sebelum klien dimulai. Verifikasi hostname tetap aktif. ID perangkat harus unik, 1–48 karakter, hanya huruf, angka, `-`, atau `_`; ID yang sama dipakai untuk client ID, JSON dan topik. Broker akan memutus salah satu koneksi jika dua klien memakai client ID yang sama. Aplikasi harus memakai client ID berbeda.
+
+Topik bawaan:
+
+| Topik | Arah dari ESP32 | QoS | Retain | Payload |
+|---|---|---|---|---|
+| `namika/namika-01/monitoring` | Publish | 1 | Ya | JSON sensor dan status pompa |
+| `namika/namika-01/commands` | Subscribe | 1 | **Jangan retain saat publish** | JSON `water` atau `stop` |
+| `namika/namika-01/ack` | Publish | 1 | Ya | ID dan hasil keputusan terakhir |
+| `namika/namika-01/status` | Publish/Last Will | 1 | Ya | `online` atau `offline` |
+
+Monitoring dipublish setiap 5 detik, setelah tersambung kembali, serta saat snapshot mendeteksi perubahan status penyiraman atau ID perintah. Sensor tetap dibaca setiap 5 detik, snapshot internal sekitar setiap 250 ms. Retain membantu aplikasi menerima nilai terakhir saat subscribe; backend harus memakai waktu penerimaan dan status koneksi untuk membedakan data lama. Last Will mengumumkan `offline` setelah broker mendeteksi koneksi terputus, bukan selalu langsung saat Wi-Fi mati. Keepalive 30 detik. MQTT reconnect otomatis, jeda awal 5 detik; jaringan/TLS dapat menambah waktu.
+
+Atur ACL broker agar akun perangkat hanya subscribe ke `namika/<device-id>/commands` dan publish ke topik monitoring, ack, serta status miliknya. Akun aplikasi diberi izin publish commands dan subscribe tiga topik hasil sesuai perangkat pengguna. Jangan masukkan kredensial akun administrator broker ke aplikasi. Untuk aplikasi browser, layanan cloud perlu menyediakan MQTT over WebSocket Secure atau aplikasi mengakses backend; koneksi ESP32 sendiri tetap MQTT TCP/TLS.
+
+Contoh publish perintah dari aplikasi dengan **QoS 1, retain false**:
+
+```json
+{"id": 1, "action": "water", "expires_at": 1800000060}
+```
+
+Gunakan `"action":"stop"` untuk menghentikan siklus. `expires_at` adalah Unix timestamp UTC dalam detik, harus di masa depan dan maksimal 120 detik dari waktu ESP32 saat diterima; aplikasi sebaiknya menghitung `waktu sekarang + 60`. Angka contoh hanya ilustrasi. Payload perintah maksimum 512 byte. JSON rusak/aksi tidak dikenal/retained delivery pada saat subscribe diabaikan tanpa menggerakkan pompa. Jangan gunakan retained commands: pesan lama dapat dikirim lagi ketika perangkat subscribe. Broker dapat meneruskan publish retained ke pelanggan yang sedang online dengan flag retain sudah dihapus; TTL dan ID tetap diperlukan.
+
+`id` adalah bilangan bulat 1–4294967295 dan selalu meningkat per perangkat. Aplikasi/backend harus mempertahankan urutannya termasuk setelah ESP32 restart; bila ada beberapa pengguna, pembentukan ID perlu dikoordinasikan di backend. Saat retry, kirim ID dan isi perintah yang sama. Jangan langsung membuat ID baru hanya karena ACK belum terlihat. Langganan ACK dilakukan sebelum publish perintah dan hasil harus dicocokkan berdasarkan ID.
+
+ID tertinggi dicatat ke NVS sebelum perintah masuk antrean pompa. ID yang sama/lebih kecil tidak mengeksekusi pompa lagi. Setelah reboot, hasil perintah lama bisa menjadi `duplicate_or_interrupted`: perintah mungkin sudah dijalankan, atau terlewat karena reset antara pencatatan dan pelaksanaan. Jangan menganggap hasil ini sebagai alasan mengulang siram dengan ID baru tanpa memeriksa kondisi perangkat. Gagal mengakses/menulis NVS menolak perintah (`storage_error`). Namespace NVS tetap `namika-cloud` seperti versi HTTPS sebelumnya; lanjutkan urutan ID saat migrasi.
+
+Contoh ACK pada `namika/namika-01/ack`:
+
+```json
+{"id":1,"result":"accepted"}
+```
+
+`accepted` berarti kontrol lokal menerima permintaan, bukan bukti air mengalir atau siklus selesai. Hasil lain: `stopped`, `sensor_unavailable`, `soil_wet`, `busy`, `cooldown`, `locked`, `expired`, `invalid_expiry`, `clock_unavailable`, `duplicate_or_interrupted`, `storage_error`, atau `queue_full`. Nilai invalid yang tidak memiliki ID/aksi sah diabaikan dan dicetak ke Serial. QoS 1 dapat menghasilkan duplikat, sehingga aplikasi tetap perlu menangani ID. ACK dan monitoring keluar memakai outbox MQTT dalam RAM; bukan riwayat permanen. Broker hanya menyimpan satu ACK retained terakhir. Aplikasi/backend yang membutuhkan histori harus menyimpannya sendiri.
+
+Perangkat memakai clean session, sehingga tidak meminta broker menyimpan antrean perintah selama offline. Aplikasi sebaiknya menonaktifkan tombol saat offline dan memberikan status menunggu sampai menerima ACK. Jika antrean lokal penuh, pesan dapat dibuang meskipun broker menerima PUBACK MQTT; PUBACK bukan bukti pompa menerima perintah. Batasi satu permintaan yang menunggu hasil dan retry dengan ID sama serta TTL yang masih berlaku. Perintah stop lewat internet tetap bergantung pada koneksi dan bukan tombol darurat.
+
+Penyiraman manual membutuhkan kalibrasi dan sensor valid. Tanah pada/di atas target `wet`, siklus aktif, cooldown, serta kunci menghalangi penyiraman. `AUTO_WATERING_ENABLED = false` hanya mematikan pemicu otomatis; manual tetap dapat digunakan. Manual memakai satu pulsa `pulseMs`, menunggu `soakMs`, lalu masuk cooldown. Stop mematikan siklus aktif dan masuk cooldown, tetapi tidak membuka kunci. Timer lokal tetap menghentikan pulsa walaupun MQTT/Wi-Fi putus.
+
+Contoh JSON monitoring:
+
+```json
+{
+  "device_id": "namika-01",
+  "uptime_ms": 310000,
+  "sample_age_ms": 100,
+  "temperature_c": 28.5,
+  "humidity_pct": 55.0,
+  "light_lux": 12000.0,
+  "soil_pct": 12.0,
+  "soil_raw": 2796,
+  "sensors_valid": true,
+  "soil_calibrated": true,
+  "automatic_enabled": true,
+  "samples": 60,
+  "mood": 3,
+  "pump_on": false,
+  "watering_state": "monitoring",
+  "pulses": 0,
+  "last_command": {"id": 0, "result": "none"}
+}
+```
+
+Nilai non-finite menjadi JSON `null`. `soil_pct` adalah indeks relatif kalibrasi; perhatikan `soil_calibrated` dan `sensors_valid`. Mood dinilai penuh setelah 60 sampel valid. `last_command` adalah keputusan loop pompa pada sesi saat ini; penolakan jaringan seperti expired atau duplikat dikirim melalui ACK. `watering_state` dapat berupa `monitoring`, `watering`, `soaking`, `cooldown`, atau `locked`.
+
+Jaringan berjalan pada task terpisah dan tidak menulis GPIO pompa. Antrean masuk menampung empat pesan; hasil keputusan diproses satu per satu. Outbox dibatasi melalui pemeriksaan ukuran sebelum enqueue agar koneksi lambat tidak menumpuk monitoring tanpa batas. Tidak ada backlog histori sensor saat offline. Timer pompa tetap timer software di loop Arduino dan perlu diuji pada perangkat fisik bersama seluruh sensor.
 
 ## Menjalankan proyek
 
@@ -63,7 +179,7 @@ Environment `esp32dev` memakai platform `espressif32` dan framework `arduino`.
 
 - `Adafruit SSD1306` dideklarasikan melalui `lib_deps` di [platformio.ini](platformio.ini), bersama dependency transitifnya.
 - Adafruit GFX, Adafruit BME280, Adafruit Unified Sensor, dan BH1750 juga tersedia sebagai library lokal di `lib/`.
-- `WiFi` dan `Wire` berasal dari framework Arduino ESP32.
+- `WiFi`, `Wire`, `Preferences`, ESP-MQTT, cJSON, dan FreeRTOS berasal dari framework Arduino ESP32.
 
 Pertahankan folder library lokal ketika menyalin proyek. Library **SSD1306 OLED Display** yang juga ada di `lib/` menyediakan `SSD1306.h`; kode proyek menggunakan library **Adafruit SSD1306** dengan header `Adafruit_SSD1306.h`.
 
@@ -127,7 +243,7 @@ Mood gabungan memakai aturan berikut, bukan rata-rata aritmetika level sensor:
 2. **Level 2:** tanah belum dikalibrasi, suhu kurang optimal, tanah masih mengering, cahaya saat terjaga kurang, atau kelembapan udara tinggi.
 3. **Level 3:** seluruh kondisi yang dinilai masuk kategori baik.
 
-Kelembapan udara tinggi dan cahaya rendah saja tidak membuat mood gabungan menjadi level 1. Saat tidur, cahaya diabaikan dalam penilaian mood gabungan. Tanah kering tidak dianggap sebagai kondisi buruk dan tidak memicu pompa.
+Kelembapan udara tinggi dan cahaya rendah saja tidak membuat mood gabungan menjadi level 1. Saat tidur, cahaya diabaikan dalam penilaian mood gabungan. Tanah kering tidak dianggap sebagai mood buruk; kontrol pompa memakai aturan penyiraman terpisah di atas.
 
 Timer tanah basah memakai pembacaan individual `soil >60%`, sedangkan level tanah memakai nilai rata-rata. Satu pembacaan tidak basah, pembacaan sensor tidak valid, atau restart akan memulai ulang timer tersebut.
 
@@ -173,7 +289,12 @@ Animation: Happy
 ```text
 namika/
 ├── platformio.ini                Konfigurasi board, dependency, dan baud monitor
-├── src/main.cpp                  Inisialisasi, sensor, Wi-Fi, waktu, dan OLED
+├── src/main.cpp                  Sensor, pompa, Wi-Fi, waktu, dan OLED
+├── src/MqttMonitoring.cpp        MQTT TLS, subscription perintah, dan ACK
+├── include/MqttMonitoring.h      Antrean perintah dan snapshot antar-task
+├── include/MqttPacket.h          Perakitan payload MQTT terfragmentasi
+├── include/CloudCommand.h        Validasi ID, aksi, dan kedaluwarsa perintah
+├── include/WateringController.h  Timer dan batas penyiraman otomatis
 ├── include/CactusMood.h          Kalibrasi, rata-rata, timer, dan penilaian mood
 ├── include/EyeAnimation.h        Debounce touch, deteksi tidur, dan kontrol animasi
 ├── include/EyeRenderer.h         Penggambaran mata pada Adafruit SSD1306
@@ -190,6 +311,27 @@ g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_mood.cpp -o /tmp/n
 /tmp/namika-test-mood
 g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_animation.cpp -o /tmp/namika-test-animation
 /tmp/namika-test-animation
+```
+
+Pengujian kontrol pompa:
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_watering.cpp -o /tmp/namika-test-watering
+/tmp/namika-test-watering
+```
+
+Pengujian kontrak perintah cloud:
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_cloud.cpp -o /tmp/namika-test-cloud
+/tmp/namika-test-cloud
+```
+
+Pengujian payload MQTT:
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_mqtt_packet.cpp -o /tmp/namika-test-mqtt
+/tmp/namika-test-mqtt
 ```
 
 Pengujian mencakup ambang mood, kalibrasi dua arah, rata-rata bergerak, timer tanah basah, wakeup, sleep, prioritas touch, debounce, dan rollover timer. Build ESP32 dilakukan melalui `pio run -e esp32dev`. Pembacaan sensor, polaritas touch, dan tampilan OLED perlu diperiksa pada perangkat fisik.
