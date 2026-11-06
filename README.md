@@ -19,14 +19,14 @@ Ambang sensor merupakan nilai awal untuk eksperimen pada kaktus gurun. Sesuaikan
 | Perangkat atau sinyal | Sambungan ESP32 | Keterangan |
 |---|---|---|
 | OLED SSD1306 128×64 | SDA GPIO21, SCL GPIO22 | Alamat I2C `0x3C` |
-| BME280 | SDA GPIO21, SCL GPIO22 | Mencoba alamat `0x76`, lalu `0x77` |
+| GY-213V-HDC1080 | SDA GPIO21, SCL GPIO22 | Alamat `0x40`; VCC ke 3,3 V dan GND ke GND |
 | BH1750 | SDA GPIO21, SCL GPIO22 | Alamat default library `0x23` |
 | Output analog sensor tanah | GPIO34 | ADC1, menggantikan GPIO5 |
 | Output digital modul touch | GPIO27 | Menggantikan GPIO3; default aktif `HIGH` |
 | GND seluruh modul | GND | Ground bersama |
 | Kontrol pompa, jika dipasang | GPIO4 | Sinyal kontrol driver pompa; polaritas melalui `PUMP_ACTIVE_LEVEL` |
 
-OLED, BME280, dan BH1750 berbagi bus I2C. Gunakan modul yang kompatibel dengan logika 3,3 V dan sesuaikan catu dayanya dengan spesifikasi modul. Tegangan sinyal yang masuk ke GPIO ESP32 harus sesuai batas 3,3 V.
+OLED, HDC1080, dan BH1750 berbagi bus I2C. Gunakan modul yang kompatibel dengan logika 3,3 V dan sesuaikan catu dayanya dengan spesifikasi modul. Tegangan sinyal yang masuk ke GPIO ESP32 harus sesuai batas 3,3 V.
 
 Input touch menggunakan **output digital modul touch**, bukan pembacaan sentuhan kapasitif langsung pada pin ESP32. Untuk modul aktif `LOW`, ubah `TOUCH_ACTIVE_LEVEL` menjadi `0` (`LOW`) di `include/AppConfig.h`; program menyesuaikan pull-up/pull-down input.
 
@@ -51,7 +51,7 @@ Ini adalah parameter eksperimen, bukan dosis penyiraman universal untuk kaktus. 
 
 Setelah pulsa terakhir, program tetap menunggu peresapan. Jika target belum tercapai, status menjadi `Cek air / sensor` dan pompa terkunci. Gangguan sensor saat memompa/menunggu peresapan juga mengunci pompa. Periksa air, selang, sensor, dan konfigurasi sebelum restart untuk membuka kunci. Tidak ada pengulangan otomatis dari kondisi terkunci.
 
-Pembacaan sensor tidak valid, ADC tepat 0 atau 4095, atau data berumur 10 detik menghentikan/mencegah pompa. Gangguan BME280/BH1750 juga menghambat penyiraman karena validasi memakai seluruh sensor. Sensor tanah yang terputus tetapi menghasilkan nilai ADC masuk akal masih dapat lolos pemeriksaan ini; batas pulsa membatasi satu siklus, bukan mendeteksi seluruh kerusakan sensor.
+Pembacaan sensor tidak valid, ADC tepat 0 atau 4095, atau data berumur 10 detik menghentikan/mencegah pompa. Gangguan HDC1080/BH1750 juga menghambat penyiraman karena validasi memakai seluruh sensor. Sensor tanah yang terputus tetapi menghasilkan nilai ADC masuk akal masih dapat lolos pemeriksaan ini; batas pulsa membatasi satu siklus, bukan mendeteksi seluruh kerusakan sensor.
 
 Timer berjalan menggunakan `millis()` tanpa `delay()` penyiraman, sehingga animasi tetap berjalan. Timer dan kunci hanya tersimpan di RAM: restart menghapus jeda 24 jam serta riwayat pulsa, dan konfirmasi kering dimulai dari awal. Jangan gunakan restart berulang sebagai cara mengulang penyiraman.
 
@@ -178,7 +178,9 @@ Ganti `/dev/ttyUSB0` dengan port ESP32 Anda. Di lingkungan pengembangan proyek i
 Environment `esp32dev` memakai platform `espressif32` dan framework `arduino`.
 
 - `Adafruit SSD1306` dideklarasikan melalui `lib_deps` di [platformio.ini](platformio.ini), bersama dependency transitifnya.
-- Adafruit GFX, Adafruit BME280, Adafruit Unified Sensor, dan BH1750 juga tersedia sebagai library lokal di `lib/`.
+- Adafruit GFX dan BH1750 tersedia sebagai library lokal di `lib/`.
+- Driver HDC1080 lokal di `lib/HDC1080/` menggunakan `Wire` langsung, tanpa dependency tambahan. Driver memeriksa ID sensor, membaca suhu dan kelembapan pada resolusi 14 bit, dan menandai kegagalan I2C sebagai sampel tidak valid. Inisialisasi sensor yang gagal dicoba ulang setiap 30 detik.
+- Library Adafruit BME280 dan Adafruit Unified Sensor lama masih tersimpan di `lib/`, tetapi tidak digunakan oleh driver sensor saat ini.
 - `WiFi`, `Wire`, `Preferences`, ESP-MQTT, cJSON, dan FreeRTOS berasal dari framework Arduino ESP32.
 
 Pertahankan folder library lokal ketika menyalin proyek. Library **SSD1306 OLED Display** yang juga ada di `lib/` menyediakan `SSD1306.h`; kode proyek menggunakan library **Adafruit SSD1306** dengan header `Adafruit_SSD1306.h`.
@@ -293,7 +295,7 @@ namika/
 │   ├── AppConfig.h              Pin, kalibrasi, Wi-Fi, MQTT, dan interval aplikasi
 │   ├── NamikaApp.h              Komposisi modul dan penjadwalan
 │   ├── SensorSample.h           Data hasil baca sensor tanpa dependency hardware
-│   ├── SensorService.h          Driver BME280, BH1750, dan ADC tanah
+│   ├── SensorService.h          Driver HDC1080, BH1750, dan ADC tanah
 │   ├── PlantMonitor.h           Status monitoring, rata-rata, mood, dan deteksi tidur
 │   ├── IrrigationService.h      Akses GPIO pompa dan pelaksanaan perintah
 │   ├── Connectivity.h           Wi-Fi, reconnect, serta waktu NTP/WIB
@@ -363,6 +365,13 @@ g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_monitor.cpp src/Pl
 /tmp/namika-test-monitor
 ```
 
+Pengujian driver HDC1080 dengan simulasi I2C (konversi nilai, identitas sensor, komunikasi gagal, dan inisialisasi ulang):
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Itest/host/hdc1080 -Ilib/HDC1080 test/host/test_hdc1080.cpp lib/HDC1080/HDC1080.cpp -o /tmp/namika-test-hdc1080
+/tmp/namika-test-hdc1080
+```
+
 Pengujian mencakup ambang mood, kalibrasi dua arah, rata-rata bergerak, timer tanah basah, wakeup, sleep, prioritas touch, debounce, dan rollover timer. Build ESP32 dilakukan melalui `pio run -e esp32dev`. Pembacaan sensor, polaritas touch, dan tampilan OLED perlu diperiksa pada perangkat fisik.
 
 ## Pemecahan masalah
@@ -371,7 +380,7 @@ Pengujian mencakup ambang mood, kalibrasi dua arah, rata-rata bergerak, timer ta
 |---|---|
 | `cannot open source file "Adafruit_SSD1306.h"` | Pastikan dependency Adafruit SSD1306 terpasang melalui build. Jalankan **PlatformIO: Rebuild C/C++ Project Index** dan **Developer: Reload Window** jika hanya editor yang belum membaca header. |
 | OLED kosong | Periksa daya, GND, SDA/SCL, ukuran layar, dan alamat `0x3C`. Alamat lain memerlukan perubahan `display.begin()` di program. |
-| `Cek sensor` | Periksa BME280, BH1750, koneksi I2C, dan nilai kalibrasi dry/wet. Sampel tidak valid menghapus rata-rata sehingga pengumpulan data dimulai lagi. |
+| `Cek sensor` | Periksa HDC1080, BH1750, koneksi I2C, dan nilai kalibrasi dry/wet. Sampel tidak valid menghapus rata-rata sehingga pengumpulan data dimulai lagi. |
 | `Kalibrasi tanah` terus tampil | Isi endpoint ADC yang sesuai, set `SOIL_CALIBRATED = true`, lalu upload ulang. |
 | Mata selalu happy | Periksa sambungan output digital ke GPIO27, polaritas modul, dan `TOUCH_ACTIVE_LEVEL`. |
 | Jam malam tidak sesuai | Periksa kredensial, akses NTP, zona WIB, dan jadwal tidur. Tanpa sinkronisasi waktu, perangkat hanya memakai deteksi gelap. |
