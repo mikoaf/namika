@@ -1,5 +1,5 @@
 #pragma once
-#include <Adafruit_BME280.h>
+#include <HDC1080.h>
 #include <BH1750.h>
 #include "SensorSample.h"
 
@@ -10,9 +10,9 @@ class SensorService {
   void update(uint32_t now);
   SensorSample read();
  private:
-  Adafruit_BME280 bme_;
+  HDC1080 hdc_;
   BH1750 lightMeter_;
-  bool bmeReady_ = false, lightReady_ = false;
+  bool hdcReady_ = false, lightReady_ = false;
   uint32_t lastRetry_ = 0;
   void initializeMissing();
 };
