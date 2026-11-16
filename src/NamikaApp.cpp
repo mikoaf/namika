@@ -48,7 +48,6 @@ void NamikaApp::update() {
   // Pump deadlines and incoming commands take priority over maintenance.
   irrigation_.update(now, monitor_.status().wateringInputUsable(now));
   handleCommands(now);
-  connectivity_.update(now);
   sensors_.update(now);
   now = millis();
   if (uint32_t(now - monitor_.status().lastSample) >= config::SAMPLE_MS) {
