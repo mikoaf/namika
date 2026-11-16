@@ -11,6 +11,7 @@ Ambang sensor merupakan nilai awal untuk eksperimen pada kaktus gurun. Sesuaikan
 - Animasi wakeup, sleep, happy, saccade, sad, dan mata netral.
 - Deteksi malam menggunakan waktu NTP dalam zona WIB, serta deteksi gelap dari BH1750.
 - Monitoring berjalan tanpa menunggu Wi-Fi tersambung.
+- Portal web pengaturan Wi-Fi otomatis saat koneksi gagal; kredensial tersimpan setelah berhasil terhubung.
 - Peringatan tanah basah terus selama 48 jam setelah kalibrasi.
 - Status kalibrasi, pengumpulan data, dan gangguan sensor pada OLED; pembacaan lengkap melalui Serial Monitor.
 
@@ -187,14 +188,26 @@ Pertahankan folder library lokal ketika menyalin proyek. Library **SSD1306 OLED 
 
 ## Konfigurasi Wi-Fi dan waktu
 
-Isi kredensial di [include/AppConfig.h](include/AppConfig.h):
+Firmware membuka hotspot pengaturan bila Wi-Fi gagal terhubung selama 30 detik, baik saat boot maupun setelah koneksi terputus karena pindah lokasi. Jika belum ada kredensial sama sekali, hotspot langsung dibuka. Percobaan ulang Wi-Fi tetap berjalan setiap 30 detik selama portal tersedia.
+
+1. Nyalakan perangkat; jika Wi-Fi lama tidak tersedia, tunggu sekitar 30 detik.
+2. Sambungkan HP/laptop ke **`NaMiKa-Setup-xxxxxx`**, dengan password awal **`namika123`**. Enam karakter terakhir membedakan tiap ESP32.
+3. Tetap gunakan jaringan tersebut meskipun HP menampilkan “tanpa internet”. Jika halaman tidak terbuka otomatis, buka **http://192.168.4.1/** (HTTP).
+4. Masukkan SSID dan password Wi-Fi **2,4 GHz** yang baru, lalu pilih **Hubungkan dan simpan**. SSID diketik manual, termasuk untuk jaringan tersembunyi. Password kosong untuk jaringan terbuka; WPA/WPA2 personal memakai 8–63 karakter atau PSK 64 digit heksadesimal.
+5. Tunggu hasil koneksi, maksimal sekitar 30 detik per percobaan. Jika gagal, periksa isian lalu coba lagi; hotspot tetap tersedia dan kredensial lama di flash tidak dihapus. Retry otomatis juga terus memakai isian terbaru di RAM.
+6. Setelah berhasil mendapat IP, SSID/password disimpan sebagai satu record di NVS melalui Preferences. Pengaturan ini diprioritaskan pada boot berikutnya. Hotspot ditutup 15 detik setelah sukses. Perangkat tidak perlu restart.
+
+Pergantian kanal saat ESP32 mencoba router baru dapat memutus sambungan HP sesaat. Sambungkan kembali ke hotspot NaMiKa dan buka alamat yang sama untuk memeriksa status. Jika penyimpanan gagal, portal tetap terbuka dan menampilkan pesan untuk memasukkan ulang kredensial. Koneksi Wi-Fi berhasil berarti perangkat mendapat IP router; ini tidak menjamin akses internet/NTP/MQTT.
+
+Kredensial awal opsional di [include/AppConfig.h](include/AppConfig.h) digunakan hanya jika belum ada pengaturan portal yang valid:
 
 ```cpp
 constexpr const char *WIFI_SSID = "NamaWiFi";
 constexpr const char *WIFI_PASSWORD = "PasswordWiFi";
+constexpr const char *WIFI_SETUP_PASSWORD = "namika123";
 ```
 
-SSID kosong atau nilai bawaan `YourWiFiSSID` membuat koneksi Wi-Fi tidak dijalankan. Monitoring tetap bekerja secara offline. Jika koneksi terputus, program mencoba tersambung kembali setiap 30 detik.
+SSID awal kosong atau `YourWiFiSSID` akan langsung membuka portal. Mengubah SSID awal di kode tidak menimpa kredensial portal yang sudah tersimpan. Menghapus flash/NVS menghapus pengaturan tersimpan. Password hotspot dapat diubah melalui `WIFI_SETUP_PASSWORD` sebelum upload (8–63 karakter). Endpoint pengaturan hanya melayani koneksi melalui hotspot. Layanan Wi-Fi, DNS captive portal, dan HTTP berjalan di task FreeRTOS tersendiri sehingga klien web lambat tidak menahan loop kontrol pompa, sensor, dan OLED. Tidak ada dependency tambahan di luar library bawaan Arduino ESP32.
 
 Waktu diambil dari `pool.ntp.org` dan `time.google.com`, dengan zona **WIB atau UTC+7**. Tidak diperlukan modul RTC untuk sinkronisasi NTP. Setelah sinkronisasi, jam tetap berjalan saat Wi-Fi terputus selama ESP32 menyala. Setelah restart, perangkat membutuhkan sinkronisasi lagi agar mengetahui waktu kalender.
 
@@ -298,7 +311,8 @@ namika/
 │   ├── SensorService.h          Driver HDC1080, BH1750, dan ADC tanah
 │   ├── PlantMonitor.h           Status monitoring, rata-rata, mood, dan deteksi tidur
 │   ├── IrrigationService.h      Akses GPIO pompa dan pelaksanaan perintah
-│   ├── Connectivity.h           Wi-Fi, reconnect, serta waktu NTP/WIB
+│   ├── Connectivity.h           Task Wi-Fi/portal pengaturan serta waktu NTP/WIB
+│   ├── WifiCredentials.h        Validasi SSID/password dan record NVS
 │   ├── FaceDisplay.h            OLED, touch, dan pemilihan animasi
 │   ├── MqttMonitoring.h         Antrean snapshot/perintah MQTT
 │   ├── MqttPacket.h             Perakitan payload MQTT terfragmentasi
@@ -322,9 +336,9 @@ namika/
 
 `main.cpp` hanya membuat `NamikaApp` dan memanggil `begin()`/`update()`. Ubah konfigurasi perangkat di `include/AppConfig.h` dalam namespace `config`. `NamikaApp` menghubungkan hasil sensor ke monitor dan pompa, meneruskan perintah MQTT, serta membentuk snapshot jaringan. Modul MQTT menerima konfigurasi lewat parameter dan tidak mengakses objek pompa.
 
-`SensorService` memiliki seluruh driver sensor; `PlantMonitor` hanya mengolah `SensorSample` sehingga dapat diuji tanpa ESP32. `IrrigationService` menjadi pemilik GPIO pompa dan menggunakan `WateringController` yang tetap bisa diuji terpisah. `FaceDisplay` membaca status monitor dan controller untuk menggambar, tanpa mengubah kondisi tanaman atau mengendalikan pompa. `Connectivity` menangani Wi-Fi dan jam. Bus `Wire` diinisialisasi sekali oleh `NamikaApp` sebelum modul sensor dan OLED dimulai.
+`SensorService` memiliki seluruh driver sensor; `PlantMonitor` hanya mengolah `SensorSample` sehingga dapat diuji tanpa ESP32. `IrrigationService` menjadi pemilik GPIO pompa dan menggunakan `WateringController` yang tetap bisa diuji terpisah. `FaceDisplay` membaca status monitor dan controller untuk menggambar, tanpa mengubah kondisi tanaman atau mengendalikan pompa. `Connectivity` menjalankan task Wi-Fi/portal dan menyediakan jam. Bus `Wire` diinisialisasi sekali oleh `NamikaApp` sebelum modul sensor dan OLED dimulai.
 
-Alur setiap iterasi: periksa deadline pompa dan perintah → rawat Wi-Fi/sensor → baca sensor jika waktunya → perbarui monitoring dan keputusan penyiraman → periksa pompa lagi → perbarui animasi/OLED → terbitkan snapshot internal jika waktunya. Task MQTT tetap terpisah dari loop ini. Interval dan aturan penyiraman mengikuti konfigurasi sebelumnya.
+Alur setiap iterasi: periksa deadline pompa dan perintah → rawat sensor → baca sensor jika waktunya → perbarui monitoring dan keputusan penyiraman → periksa pompa lagi → perbarui animasi/OLED → terbitkan snapshot internal jika waktunya. Task MQTT tetap terpisah dari loop ini. Interval dan aturan penyiraman mengikuti konfigurasi sebelumnya.
 
 ## Pengujian logika
 
@@ -373,6 +387,22 @@ g++ -std=c++11 -Wall -Wextra -Werror -Itest/host/hdc1080 -Ilib/HDC1080 test/host
 ```
 
 Pengujian mencakup ambang mood, kalibrasi dua arah, rata-rata bergerak, timer tanah basah, wakeup, sleep, prioritas touch, debounce, dan rollover timer. Build ESP32 dilakukan melalui `pio run -e esp32dev`. Pembacaan sensor, polaritas touch, dan tampilan OLED perlu diperiksa pada perangkat fisik.
+
+Pengujian validasi kredensial Wi-Fi (batas byte SSID/password, PSK heksadesimal, NUL, dan record flash tidak valid):
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_wifi_credentials.cpp -o /tmp/namika-test-wifi
+/tmp/namika-test-wifi
+```
+
+Pengujian siklus portal menggunakan kode layanan asli dengan simulasi radio, HTTP, dan NVS (boot awal, pindah jaringan, password salah, retry sukses, restart, akses melalui STA ditolak, flash gagal, hotspot gagal, serta rollover timer):
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Itest/host/wifi -Iinclude test/host/test_wifi_portal.cpp -o /tmp/namika-test-portal
+/tmp/namika-test-portal
+```
+
+Uji portal pada ESP32 fisik setelah upload: boot tanpa kredensial, boot dengan router aktif, matikan router/pindah lokasi lalu tunggu hotspot, coba password salah lalu benar, restart untuk memeriksa persistensi, dan putuskan Wi-Fi lagi untuk memastikan portal muncul kembali. Pastikan sensor/OLED tetap berjalan selama halaman dibuka. Uji host tidak memverifikasi radio Wi-Fi, DHCP, captive portal pada HP, atau penulisan NVS fisik.
 
 ## Pemecahan masalah
 
