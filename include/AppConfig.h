@@ -4,7 +4,7 @@
 #include "WateringController.h"
 
 namespace config {
-// Replace credentials to enable network time; monitoring also works offline.
+// Optional initial Wi-Fi; successfully tested portal credentials take precedence.
 constexpr const char *WIFI_SSID = "YourWiFiSSID";
 constexpr const char *WIFI_PASSWORD = "YourWiFiPassword";
 // MQTT cloud is optional until a broker is configured. Host has no URL scheme.
@@ -34,6 +34,8 @@ constexpr int SLEEP_HOUR = 20, WAKE_HOUR = 6;
 constexpr uint32_t DISPLAY_MS = 40;
 constexpr uint32_t SNAPSHOT_MS = 250;
 constexpr uint32_t WIFI_RETRY_MS = 30000;
+constexpr const char *WIFI_SETUP_PASSWORD = "namika123";  // Hotspot password, at least 8 characters.
+constexpr uint32_t WIFI_PORTAL_CLOSE_MS = 15000;
 constexpr uint32_t SENSOR_RETRY_MS = 30000;
 constexpr int OLED_WIDTH = 128, OLED_HEIGHT = 64;
 constexpr uint8_t OLED_ADDRESS = 0x3C;
