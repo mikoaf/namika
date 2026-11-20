@@ -252,6 +252,7 @@ LocalClock Connectivity::clock() const {
   LocalClock result;
   result.valid = local.tm_year >= 124;
   result.hour = local.tm_hour;
+  result.minute = local.tm_min;
   return result;
 }
 
