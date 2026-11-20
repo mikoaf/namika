@@ -288,7 +288,7 @@ Jika sudah pukul 06.00 tetapi lingkungan masih gelap, perangkat tetap tidur. Lam
 
 ## Tampilan dan log
 
-OLED menampilkan nama perangkat, animasi aktif, serta satu baris status. Setelah data lengkap dan kalibrasi selesai, baris status bergantian setiap 4 detik antara alasan mood dan rata-rata suhu, kelembapan udara, serta indeks tanah.
+OLED menampilkan nama perangkat di kiri atas, jam `HH:MM` dalam WIB di kanan atas, dan animasi mata di tengah. Sebelum waktu tersinkron melalui NTP, jam menampilkan `--:--`. Baris bawah menampilkan rata-rata suhu dalam °C di kiri dan kelembapan udara dalam % di kanan. Pesan kalibrasi, pengumpulan data, atau alasan mood yang kurang baik bergantian dengan angka sensor setiap 4 detik. Gangguan sensor dan status pompa (terkunci, menyiram, atau meresap) mendapat prioritas di baris bawah selama kondisi tersebut aktif. Nama animasi tetap tersedia di Serial Monitor.
 
 Serial Monitor menampilkan data berikut:
 
