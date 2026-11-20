@@ -13,7 +13,7 @@ void NamikaApp::begin() {
   const uint32_t now = millis();
   monitor_.begin(now);  // Allow the first BH1750 measurement to complete.
   face_.begin(now);
-  face_.update(millis(), monitor_.status(), irrigation_.controller());
+  face_.update(millis(), monitor_.status(), irrigation_.controller(), connectivity_.clock());
   Serial.println("NaMiKa: soil input GPIO34; calibrate dry/wet ADC endpoints.");
   const remote::Config mqttConfig{config::MQTT_HOST, config::MQTT_PORT, config::MQTT_USERNAME,
       config::MQTT_PASSWORD, config::MQTT_ROOT_CA, config::MQTT_DEVICE_ID};
@@ -60,7 +60,7 @@ void NamikaApp::update() {
   }
   now = millis();
   irrigation_.update(now, monitor_.status().wateringInputUsable(now));
-  face_.update(now, monitor_.status(), irrigation_.controller());
+  face_.update(now, monitor_.status(), irrigation_.controller(), connectivity_.clock());
   now = millis();
   if (uint32_t(now - lastPublish_) >= config::SNAPSHOT_MS) {
     lastPublish_ = now;
