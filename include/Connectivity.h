@@ -4,6 +4,7 @@
 struct LocalClock {
   bool valid = false;
   int hour = 0;
+  int minute = 0;
 };
 
 class Connectivity {
