@@ -1,5 +1,6 @@
 #include "MqttMonitoring.h"
 #include "MqttPacket.h"
+#include "MqttOta.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Preferences.h>
@@ -31,8 +32,10 @@ void mqttEvent(void *, esp_event_base_t, int32_t eventId, void *eventData) {
   } else if (eventId == MQTT_EVENT_DISCONNECTED) {
     xEventGroupClearBits(connection, CONNECTED | NEW_SESSION);
     packet.reset();
+    ota::disconnected();
     Serial.println("MQTT cloud disconnected; reconnecting automatically");
   } else if (eventId == MQTT_EVENT_DATA) {
+    ota::receive(event);
     const bool topicMatches = event->topic && event->topic_len == int(commandTopic.length()) &&
         !memcmp(event->topic, commandTopic.c_str(), commandTopic.length());
     if (event->current_data_offset < 0 || event->total_data_len < 0 || event->data_len < 0) {
@@ -71,6 +74,7 @@ String json() {
   body += ",\"samples\":" + String(current.samples);
   body += ",\"mood\":" + String(current.mood);
   body += ",\"pump_on\":" + String(current.pumping ? "true" : "false");
+  body += ",\"ota_active\":" + String(ota::requested() ? "true" : "false");
   body += ",\"watering_state\":\"" + String(current.wateringState) + "\"";
   body += ",\"pulses\":" + String(current.pulses);
   body += ",\"last_command\":{\"id\":" + String(current.commandId);
@@ -124,9 +128,11 @@ void networkTask(void *) {
       }
     }
     const EventBits_t bits = xEventGroupGetBits(connection);
+    ota::tick(client, client && (bits & CONNECTED));
     if (client && (bits & CONNECTED)) {
       if ((bits & NEW_SESSION) && esp_mqtt_client_get_outbox_size(client) < 4096) {
         if (esp_mqtt_client_subscribe(client, commandTopic.c_str(), 1) >= 0 &&
+            ota::subscribe(client) &&
             esp_mqtt_client_enqueue(client, statusTopic.c_str(), "online", 0, 1, 1, true) >= 0) {
           xEventGroupClearBits(connection, NEW_SESSION);
           lastPush = millis() - 5000;
@@ -167,6 +173,7 @@ void networkTask(void *) {
             } else {
               seenId = command.id;
               if (strcmp(validation, "valid")) pendingResult = validation;
+              else if (ota::requested()) pendingResult = "ota_busy";
               else if (xQueueSend(commands, &command, 0) != pdTRUE)
                 pendingResult = "queue_full";
             }
@@ -206,6 +213,7 @@ bool begin(const Config &config) {
           (c >= '0' && c <= '9') || c == '-' || c == '_')) return false;
   }
   const String prefix = "namika/" + String(settings.deviceId);
+  if (!ota::begin(prefix.c_str())) return false;
   commandTopic = prefix + "/commands";
   telemetryTopic = prefix + "/monitoring";
   ackTopic = prefix + "/ack";
