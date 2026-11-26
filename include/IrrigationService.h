@@ -8,8 +8,9 @@ class IrrigationService {
   void begin();
   void update(uint32_t now, bool inputUsable);
   void sample(uint32_t now, float soil, bool inputUsable);
+  void suspend(uint32_t now);
   void command(const remote::Command &command, uint32_t now, uint32_t epoch,
-               float soil, bool inputUsable);
+               float soil, bool inputUsable, bool otaActive = false);
   const watering::Controller &controller() const { return controller_; }
   const char *stateName() const;
   uint32_t lastCommandId() const { return lastCommandId_; }
