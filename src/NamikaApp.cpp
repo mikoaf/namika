@@ -1,6 +1,7 @@
 #include "NamikaApp.h"
 #include "AppConfig.h"
 #include "MqttMonitoring.h"
+#include "MqttOta.h"
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -22,12 +23,12 @@ void NamikaApp::begin() {
   publishMonitoring(millis());
 }
 
-void NamikaApp::handleCommands(uint32_t now) {
+void NamikaApp::handleCommands(uint32_t now, bool otaActive) {
   remote::Command command;
   if (!remote::takeCommand(command)) return;
   const auto &plant = monitor_.status();
   irrigation_.command(command, now, connectivity_.epoch(), plant.latest.soil,
-                      plant.wateringInputUsable(now));
+                      plant.wateringInputUsable(now), otaActive);
 }
 
 void NamikaApp::publishMonitoring(uint32_t now) {
@@ -45,6 +46,15 @@ void NamikaApp::publishMonitoring(uint32_t now) {
 
 void NamikaApp::update() {
   uint32_t now = millis();
+  if (remote::ota::requested()) {
+    irrigation_.suspend(now);
+    // Resolve already queued commands, so the cloud worker can publish their ACK.
+    handleCommands(now, true);
+    remote::ota::pumpStopped();
+    publishMonitoring(now);
+    delay(1);
+    return;
+  }
   // Pump deadlines and incoming commands take priority over maintenance.
   irrigation_.update(now, monitor_.status().wateringInputUsable(now));
   handleCommands(now);
