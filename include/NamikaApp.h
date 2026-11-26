@@ -17,7 +17,7 @@ class NamikaApp {
   IrrigationService irrigation_;
   FaceDisplay face_;
   uint32_t lastPublish_ = 0;
-  void handleCommands(uint32_t now);
+  void handleCommands(uint32_t now, bool otaActive = false);
   void publishMonitoring(uint32_t now);
   void logSample() const;
 };
