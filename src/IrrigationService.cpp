@@ -24,10 +24,17 @@ void IrrigationService::sample(uint32_t now, float soil, bool inputUsable) {
   writePump();
 }
 
+void IrrigationService::suspend(uint32_t now) {
+  controller_.stop(now);
+  writePump();
+}
+
 void IrrigationService::command(const remote::Command &command, uint32_t now,
-                                uint32_t epoch, float soil, bool inputUsable) {
+                                uint32_t epoch, float soil, bool inputUsable, bool otaActive) {
   lastCommandId_ = command.id;
-  if (epoch < 1704067200 || epoch >= command.expiresAt) {
+  if (otaActive) {
+    lastCommandResult_ = "ota_busy";
+  } else if (epoch < 1704067200 || epoch >= command.expiresAt) {
     lastCommandResult_ = "expired";
   } else if (command.action == remote::Action::Stop) {
     controller_.stop(now);
