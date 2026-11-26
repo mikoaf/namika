@@ -115,7 +115,7 @@ Contoh ACK pada `namika/namika-01/ack`:
 {"id":1,"result":"accepted"}
 ```
 
-`accepted` berarti kontrol lokal menerima permintaan, bukan bukti air mengalir atau siklus selesai. Hasil lain: `stopped`, `sensor_unavailable`, `soil_wet`, `busy`, `cooldown`, `locked`, `expired`, `invalid_expiry`, `clock_unavailable`, `duplicate_or_interrupted`, `storage_error`, atau `queue_full`. Nilai invalid yang tidak memiliki ID/aksi sah diabaikan dan dicetak ke Serial. QoS 1 dapat menghasilkan duplikat, sehingga aplikasi tetap perlu menangani ID. ACK dan monitoring keluar memakai outbox MQTT dalam RAM; bukan riwayat permanen. Broker hanya menyimpan satu ACK retained terakhir. Aplikasi/backend yang membutuhkan histori harus menyimpannya sendiri.
+`accepted` berarti kontrol lokal menerima permintaan, bukan bukti air mengalir atau siklus selesai. Hasil lain: `stopped`, `sensor_unavailable`, `soil_wet`, `busy`, `cooldown`, `locked`, `ota_busy`, `expired`, `invalid_expiry`, `clock_unavailable`, `duplicate_or_interrupted`, `storage_error`, atau `queue_full`. Nilai invalid yang tidak memiliki ID/aksi sah diabaikan dan dicetak ke Serial. QoS 1 dapat menghasilkan duplikat, sehingga aplikasi tetap perlu menangani ID. ACK dan monitoring keluar memakai outbox MQTT dalam RAM; bukan riwayat permanen. Broker hanya menyimpan satu ACK retained terakhir. Aplikasi/backend yang membutuhkan histori harus menyimpannya sendiri.
 
 Perangkat memakai clean session, sehingga tidak meminta broker menyimpan antrean perintah selama offline. Aplikasi sebaiknya menonaktifkan tombol saat offline dan memberikan status menunggu sampai menerima ACK. Jika antrean lokal penuh, pesan dapat dibuang meskipun broker menerima PUBACK MQTT; PUBACK bukan bukti pompa menerima perintah. Batasi satu permintaan yang menunggu hasil dan retry dengan ID sama serta TTL yang masih berlaku. Perintah stop lewat internet tetap bergantung pada koneksi dan bukan tombol darurat.
 
@@ -340,6 +340,67 @@ namika/
 
 Alur setiap iterasi: periksa deadline pompa dan perintah → rawat sensor → baca sensor jika waktunya → perbarui monitoring dan keputusan penyiraman → periksa pompa lagi → perbarui animasi/OLED → terbitkan snapshot internal jika waktunya. Task MQTT tetap terpisah dari loop ini. Interval dan aturan penyiraman mengikuti konfigurasi sebelumnya.
 
+## Update firmware langsung melalui MQTT (OTA)
+
+Firmware mendukung transfer **binary lewat MQTT/TLS**, tanpa URL atau server HTTPS. Laptop dan ESP32 boleh berbeda jaringan selama dapat mengakses broker yang sama. `tools/mqtt_ota.py` membaca aplikasi `firmware.bin`, mengirim potongan 1.024 byte, menunggu ACK ESP32 untuk setiap potongan, lalu meminta verifikasi dan restart. MQTTX dapat memantau topik ACK; pengiriman file dilakukan oleh script karena protokol membutuhkan sesi, offset, retry, dan checksum.
+
+### Persiapan dan upload pertama
+
+1. Isi `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_ROOT_CA`, dan `MQTT_DEVICE_ID` di `include/AppConfig.h`. Perangkat harus memiliki Wi-Fi dan waktu NTP yang valid.
+2. Gunakan broker MQTT TCP/TLS dengan ACL di bawah. Script memverifikasi sertifikat dan hostname broker; gunakan `--ca broker-root-ca.pem` jika CA broker tidak ada di trust store laptop.
+3. Build dan upload firmware yang sudah berisi fitur OTA ini **lewat USB sekali**:
+
+```bash
+pio run -e esp32dev -t upload
+```
+
+`platformio.ini` secara eksplisit memilih `default.csv` untuk ESP32 4 MB: dua slot aplikasi OTA, masing-masing `0x140000` (1.310.720 byte), serta partisi `otadata`. Jika perangkat sebelumnya memakai tabel partisi lain, upload lewat USB diperlukan untuk menyamakan layout. OTA berikutnya hanya memperbarui aplikasi, bukan bootloader/tabel partisi/NVS. Mekanisme ini menggunakan [API OTA Espressif](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/system/ota.html).
+
+### Mengirim update berikutnya dari laptop
+
+Siapkan Python 3 dengan dependency pengirim dalam virtual environment:
+
+```bash
+python3 -m venv .venv-ota
+.venv-ota/bin/python -m pip install -r tools/requirements-ota.txt
+pio run -e esp32dev
+.venv-ota/bin/python tools/mqtt_ota.py .pio/build/esp32dev/firmware.bin \
+  --host hostname-broker-cloud-anda \
+  --username akun-uploader \
+  --device namika-01
+```
+
+Script meminta password tanpa menampilkannya; untuk otomasi, password juga dapat dibaca dari environment `NAMIKA_MQTT_PASSWORD`. Port default `8883`, dapat diubah lewat `--port`. Kirim **application `firmware.bin`**, bukan `bootloader.bin`, `partitions.bin`, atau merged flash image. Build baru harus tetap menyertakan fitur OTA dan konfigurasi broker yang benar agar update jarak jauh berikutnya tetap tersedia. Script menggunakan [Paho MQTT Python 2.x](https://eclipse.dev/paho/files/paho.mqtt.python/html/client.html).
+
+ACK `complete` berarti firmware lolos pemeriksaan dan dipilih untuk boot berikutnya. ESP32 restart sekitar lima detik kemudian. Pastikan perangkat tersambung kembali dan periksa Serial/monitoring untuk mengonfirmasi aplikasi baru berjalan. Jika ACK terakhir hilang, script dapat melaporkan gagal walaupun firmware sudah diaktifkan; periksa perangkat sebelum mengulang update.
+
+### Topik, ACL, dan protokol
+
+Ganti `namika-01` dengan ID perangkat yang sesuai. Semua pesan OTA memakai QoS 1 dan **retain=false**.
+
+| Topik | Akun perangkat | Akun uploader | Isi |
+|---|---|---|---|
+| `namika/namika-01/ota/control` | Subscribe | Publish | JSON `start`, `finish`, `abort` |
+| `namika/namika-01/ota/data` | Subscribe | Publish | Header sesi/offset + binary firmware |
+| `namika/namika-01/ota/ack` | Publish | Subscribe | JSON sesi, hasil, dan offset berikutnya |
+
+Izin tersebut ditambahkan pada ACL monitoring yang sudah ada. Akun aplikasi pengguna biasa sebaiknya tidak memiliki izin publish OTA; akun uploader dapat mengganti seluruh program perangkat. Jangan gunakan broker publik tanpa autentikasi. SHA-256 memeriksa integritas file, **bukan tanda tangan penerbit firmware**; autentikasi dan pembatasan uploader pada implementasi ini bergantung pada TLS, kredensial, dan ACL broker. Jangan menyimpan pesan OTA retained; flag retained yang diterima ditolak, tetapi broker dapat menghapus flag tersebut saat meneruskan publish kepada pelanggan yang sudah online.
+
+Protokol versi awal untuk pengirim lain:
+
+- `start`: `{"action":"start","session":"<32 lowercase hex>","size":<jumlah byte>,"sha256":"<64 lowercase hex>","expires_at":<Unix UTC detik>}`. Expiry harus di masa depan, maksimal 120 detik dari jam ESP32. Script memakai sesi UUID baru untuk setiap transfer. Batas expiry hanya berlaku saat memulai transfer.
+- ESP32 menghentikan pompa melalui loop utama sebelum membuka penulisan flash, lalu mengirim `{"session":"...","result":"ready","next":0}`. Potongan dikirim setelah ACK ini diterima.
+- Setiap pesan data berisi 32 byte ASCII sesi, 4 byte offset unsigned big-endian, lalu 1–1.024 byte binary mentah; tidak menggunakan Base64. Panjang maksimum 1.060 byte. Fragmentasi event internal ESP-MQTT dirakit sebelum diproses.
+- ACK data: `{"session":"...","result":"chunk","next":<offset berikutnya>}`. Tunggu ACK aplikasi untuk setiap potongan. PUBACK broker saja bukan bukti flash telah ditulis. Kirim ulang potongan yang sama jika ACK hilang; potongan yang sudah diterima tidak ditulis atau dihash dua kali. Offset di luar urutan ditolak.
+- `finish`: `{"action":"finish","session":"..."}`. ESP32 memeriksa ukuran, SHA-256, dan validitas image ESP sebelum memilih partisi boot dan mengirim `complete`.
+- `abort`: `{"action":"abort","session":"..."}` membatalkan sesi yang belum diaktifkan. Setelah `complete`, restart tetap dilaksanakan.
+
+Script mencoba setiap pesan maksimal lima kali dengan batas tunggu ACK tiga detik. ESP32 membatalkan transfer jika terputus dari broker, tidak ada kemajuan selama 60 detik, atau total sesi mencapai 30 menit. Setelah putus koneksi, jalankan script lagi untuk memulai sesi baru dari awal; resume lintas koneksi/reboot belum didukung. Satu perangkat hanya menerima satu sesi aktif.
+
+Selama sesi OTA, pompa dimatikan, penyiraman otomatis/manual ditahan, sensor dan animasi OLED dijeda, serta telemetry menambahkan `ota_active: true`. Perintah penyiraman ditolak dengan `ota_busy`. Wi-Fi dan MQTT tetap berjalan di task masing-masing. Pembatalan/kegagalan melepas penahanan sehingga loop normal dilanjutkan; siklus pompa yang sudah dihentikan tidak dilanjutkan otomatis. Flash ditulis ke slot yang tidak sedang dipakai; kegagalan transfer/hash tidak mengubah pilihan boot. Build standar ini **belum mengaktifkan rollback otomatis jika aplikasi baru gagal berjalan** atau verifikasi tanda tangan firmware.
+
+Uji di perangkat fisik sebelum digunakan: update sukses lintas jaringan, putus internet di tengah transfer, firmware salah/hash rusak, dan mulai OTA saat pompa aktif. Pastikan pompa mati sebelum transfer dan perangkat kembali online setelah restart. Uji host tidak memverifikasi flash ESP32, broker cloud, radio, atau kabel/relay fisik.
+
 ## Pengujian logika
 
 Dengan compiler C++ `g++`, jalankan dari folder proyek:
@@ -403,6 +464,18 @@ g++ -std=c++11 -Wall -Wextra -Werror -Itest/host/wifi -Iinclude test/host/test_w
 ```
 
 Uji portal pada ESP32 fisik setelah upload: boot tanpa kredensial, boot dengan router aktif, matikan router/pindah lokasi lalu tunggu hotspot, coba password salah lalu benar, restart untuk memeriksa persistensi, dan putuskan Wi-Fi lagi untuk memastikan portal muncul kembali. Pastikan sensor/OLED tetap berjalan selama halaman dibuka. Uji host tidak memverifikasi radio Wi-Fi, DHCP, captive portal pada HP, atau penulisan NVS fisik.
+
+Pengujian protokol binary OTA dan pengirim laptop (tanpa broker):
+
+```bash
+g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/host/test_mqtt_ota_protocol.cpp -o /tmp/namika-test-ota
+/tmp/namika-test-ota
+g++ -std=c++11 -Wall -Wextra -Werror -Itest/host/irrigation -Iinclude test/host/test_irrigation_ota.cpp -o /tmp/namika-test-irrigation-ota
+/tmp/namika-test-irrigation-ota
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/host -p 'test_mqtt_ota_sender.py'
+```
+
+Pengujian mencakup binary NUL/0xff, fragmentasi, batas ukuran/offset, potongan duplikat dan tidak berurutan, ACK hilang/terlambat, penolakan hash, disconnect, timeout pengirim, serta penghentian GPIO pompa dan ACK `ota_busy` untuk perintah yang sudah terantre.
 
 ## Pemecahan masalah
 
